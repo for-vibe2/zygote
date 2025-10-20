@@ -1,0 +1,47 @@
+# Build artifacts
+*.o
+*.out
+zygote-cc
+
+# Generated assembly files from compilation
+examples/*.s
+tests/*.s
+
+# But keep source files
+!src/*.s
+
+# Backup and old files
+*.old
+*.bak
+*~
+*.swp
+*.swo
+.*.swp
+
+# Test artifacts
+test
+test_*
+simple_output.*
+a.out
+
+# Editor files
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug files
+*.dSYM/
+core
+vgcore.*
+
+# Generated documentation
+docs/api.md
+
+# Temporary files
+tmp/
+temp/
+*.tmp

@@ -144,29 +144,54 @@ create_node:
 parse_program:
     pushq %rbp
     movq %rsp, %rbp
-    
+    subq $16, %rsp               # Local storage for program node and last child
+
     # Create program node
     movq NODE_PROGRAM, %rdi
     movq $0, %rsi
     call create_node
-    pushq %rax               # Save program node
-    
+    movq %rax, -8(%rbp)          # Store program node
+    movq $0, -16(%rbp)           # Last child = 0
+
     # Parse functions until EOF
 parse_program_loop:
     movq current_token_type, %rax
     movq TOKEN_EOF, %rbx
     cmpq %rbx, %rax
     je parse_program_done
-    
+
     # Parse function
     call parse_function
-    # TODO: Add function to program's child list
-    
+    cmpq $0, %rax
+    je parse_program_error
+
+    movq %rax, %rcx              # Function node pointer
+
+    # Attach to program node list
+    movq -16(%rbp), %rdx         # Last child
+    cmpq $0, %rdx
+    jne program_attach_existing
+
+    # First child
+    movq -8(%rbp), %rsi
+    movq %rcx, 16(%rsi)
+    movq %rcx, -16(%rbp)
     jmp parse_program_loop
-    
+
+program_attach_existing:
+    movq %rcx, 32(%rdx)
+    movq %rcx, -16(%rbp)
+    jmp parse_program_loop
+
+parse_program_error:
+    movq $0, %rax
+    jmp parse_program_exit
+
 parse_program_done:
-    popq %rax               # Restore program node
-    
+    movq -8(%rbp), %rax
+
+parse_program_exit:
+    movq %rbp, %rsp
     popq %rbp
     ret
 
@@ -175,51 +200,75 @@ parse_program_done:
 parse_function:
     pushq %rbp
     movq %rsp, %rbp
-    
+    subq $16, %rsp               # Local storage for function name and node
+
     # Expect "int" keyword
-    movq TOKEN_KEYWORD, %rdi
-    call expect_token
-    cmpq $0, %rax
-    je parse_function_error
-    
+    movq current_token_type, %rax
+    movq TOKEN_KEYWORD, %rbx
+    cmpq %rbx, %rax
+    jne parse_function_error
+
+    movq current_token_value, %rdi
+    movq $int_keyword, %rsi
+    call strcmp_simple
+    cmpq $1, %rax
+    jne parse_function_error
+
+    call advance_token
+
     # Expect function name (identifier)
-    movq TOKEN_IDENTIFIER, %rdi
-    call expect_token
-    cmpq $0, %rax
-    je parse_function_error
-    
+    movq current_token_type, %rax
+    movq TOKEN_IDENTIFIER, %rbx
+    cmpq %rbx, %rax
+    jne parse_function_error
+
+    movq current_token_value, %rax
+    movq %rax, -8(%rbp)          # Store identifier pointer
+    call advance_token
+
+    # Expect '('
+    movq current_token_type, %rax
+    movq TOKEN_DELIMITER, %rbx
+    cmpq %rbx, %rax
+    jne parse_function_error
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $'(', %al
+    jne parse_function_error
+    call advance_token
+
+    # Expect ')'
+    movq current_token_type, %rax
+    movq TOKEN_DELIMITER, %rbx
+    cmpq %rbx, %rax
+    jne parse_function_error
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $')', %al
+    jne parse_function_error
+    call advance_token
+
     # Create function node
     movq NODE_FUNCTION, %rdi
-    movq current_token_value, %rsi
+    movq -8(%rbp), %rsi
     call create_node
-    pushq %rax               # Save function node
-    
-    # Expect '('
-    movq TOKEN_DELIMITER, %rdi
-    call expect_token
-    cmpq $0, %rax
-    je parse_function_error
-    
-    # For now, skip parameter parsing
-    # Expect ')'
-    movq TOKEN_DELIMITER, %rdi
-    call expect_token
-    cmpq $0, %rax
-    je parse_function_error
-    
+    movq %rax, -16(%rbp)         # Store function node
+
     # Parse function body (block statement)
     call parse_statement
-    
-    popq %rbx               # Restore function node
-    movq %rax, 16(%rbx)     # Set body as left child
-    movq %rbx, %rax         # Return function node
-    
+    cmpq $0, %rax
+    je parse_function_error
+
+    movq -16(%rbp), %rbx
+    movq %rax, 16(%rbx)          # Body as left child
+    movq %rbx, %rax
     jmp parse_function_exit
-    
+
 parse_function_error:
     movq $0, %rax
-    
+
 parse_function_exit:
+    movq %rbp, %rsp
     popq %rbp
     ret
 
@@ -228,54 +277,87 @@ parse_function_exit:
 parse_statement:
     pushq %rbp
     movq %rsp, %rbp
-    
+
     movq current_token_type, %rax
-    
+
     # Check for block statement '{'
     movq TOKEN_DELIMITER, %rbx
     cmpq %rbx, %rax
-    jne check_return
-    
-    # Parse block
+    jne check_keyword_statement
+
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $'{', %al
+    jne check_keyword_statement
+
     call parse_block
     jmp parse_statement_exit
-    
-check_return:
-    # Check for return statement
+
+check_keyword_statement:
+    movq current_token_type, %rax
     movq TOKEN_KEYWORD, %rbx
     cmpq %rbx, %rax
-    jne check_variable
-    
-    # Check if keyword is "return"
+    jne expression_statement
+
+    # Determine which keyword
     movq current_token_value, %rdi
     movq $return_keyword, %rsi
     call strcmp_simple
     cmpq $1, %rax
-    jne check_variable
-    
-    # Parse return statement
+    jne check_if_keyword
+
     call parse_return
     jmp parse_statement_exit
-    
-check_variable:
-    # Check for variable declaration (int identifier)
-    movq TOKEN_KEYWORD, %rbx
-    cmpq %rbx, %rax
-    jne check_expression
-    
-    # Parse variable declaration
+
+check_if_keyword:
+    movq current_token_value, %rdi
+    movq $if_keyword, %rsi
+    call strcmp_simple
+    cmpq $1, %rax
+    jne check_int_keyword
+
+    call parse_if
+    jmp parse_statement_exit
+
+check_int_keyword:
+    movq current_token_value, %rdi
+    movq $int_keyword, %rsi
+    call strcmp_simple
+    cmpq $1, %rax
+    jne statement_error
+
     call parse_variable_declaration
     jmp parse_statement_exit
-    
-check_expression:
-    # Default to expression statement
+
+expression_statement:
     call parse_expression
-    
+    cmpq $0, %rax
+    je statement_error
+
+    pushq %rax
+
     # Expect semicolon
-    movq TOKEN_DELIMITER, %rdi
-    call expect_token
-    
+    movq current_token_type, %rbx
+    movq TOKEN_DELIMITER, %rcx
+    cmpq %rcx, %rbx
+    jne statement_error_restore
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $';', %al
+    jne statement_error_restore
+    call advance_token
+
+    popq %rax
+    jmp parse_statement_exit
+
+statement_error_restore:
+    popq %rax
+
+statement_error:
+    movq $0, %rax
+
 parse_statement_exit:
+    movq %rbp, %rsp
     popq %rbp
     ret
 
@@ -284,49 +366,68 @@ parse_statement_exit:
 parse_block:
     pushq %rbp
     movq %rsp, %rbp
-    
+    subq $24, %rsp
+
     # Expect '{'
-    movq TOKEN_DELIMITER, %rdi
-    call expect_token
-    cmpq $0, %rax
-    je parse_block_error
-    
+    movq current_token_type, %rax
+    movq TOKEN_DELIMITER, %rbx
+    cmpq %rbx, %rax
+    jne parse_block_error
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $'{', %al
+    jne parse_block_error
+    call advance_token
+
     # Create block node
     movq NODE_BLOCK, %rdi
     movq $0, %rsi
     call create_node
-    pushq %rax               # Save block node
-    
+    movq %rax, -8(%rbp)
+    movq $0, -16(%rbp)          # Last statement
+
     # Parse statements until '}'
 parse_block_loop:
     movq current_token_type, %rax
     movq TOKEN_DELIMITER, %rbx
     cmpq %rbx, %rax
     jne parse_block_statement
-    
-    # Check if it's closing brace
+
     movq current_token_value, %rdi
     movb (%rdi), %al
-    cmpb $125, %al          # '}'
+    cmpb $'}', %al
     je parse_block_done
-    
+
 parse_block_statement:
     call parse_statement
-    # TODO: Add statement to block's statement list
+    cmpq $0, %rax
+    je parse_block_error
+
+    movq %rax, %rcx
+    movq -16(%rbp), %rdx
+    cmpq $0, %rdx
+    jne block_attach_existing
+
+    movq -8(%rbp), %rsi
+    movq %rcx, 16(%rsi)
+    movq %rcx, -16(%rbp)
     jmp parse_block_loop
-    
+
+block_attach_existing:
+    movq %rcx, 32(%rdx)
+    movq %rcx, -16(%rbp)
+    jmp parse_block_loop
+
 parse_block_done:
-    # Expect '}'
-    movq TOKEN_DELIMITER, %rdi
-    call expect_token
-    
-    popq %rax               # Restore block node
+    call advance_token
+    movq -8(%rbp), %rax
     jmp parse_block_exit
-    
+
 parse_block_error:
     movq $0, %rax
-    
+
 parse_block_exit:
+    movq %rbp, %rsp
     popq %rbp
     ret
 
@@ -335,26 +436,47 @@ parse_block_exit:
 parse_return:
     pushq %rbp
     movq %rsp, %rbp
-    
+
     # Advance past "return" keyword
     call advance_token
-    
+
     # Parse expression
     call parse_expression
+    cmpq $0, %rax
+    je parse_return_error
     pushq %rax               # Save expression node
-    
+
     # Create return node
     movq NODE_RETURN, %rdi
     movq $0, %rsi
     call create_node
-    
+
     popq %rbx               # Restore expression node
     movq %rbx, 16(%rax)     # Set expression as left child
-    
+    pushq %rax               # Save return node
+
     # Expect semicolon
-    movq TOKEN_DELIMITER, %rdi
-    call expect_token
-    
+    movq current_token_type, %rbx
+    movq TOKEN_DELIMITER, %rcx
+    cmpq %rcx, %rbx
+    jne parse_return_error_restore
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $';', %al
+    jne parse_return_error_restore
+    call advance_token
+
+    popq %rax
+    jmp parse_return_exit
+
+parse_return_error_restore:
+    popq %rax
+
+parse_return_error:
+    movq $0, %rax
+
+parse_return_exit:
+    movq %rbp, %rsp
     popq %rbp
     ret
 
@@ -363,31 +485,46 @@ parse_return:
 parse_variable_declaration:
     pushq %rbp
     movq %rsp, %rbp
-    
+    subq $16, %rsp
+
     # Advance past "int" keyword
     call advance_token
-    
+
     # Expect identifier
-    movq TOKEN_IDENTIFIER, %rdi
-    call expect_token
-    cmpq $0, %rax
-    je parse_var_error
-    
+    movq current_token_type, %rax
+    movq TOKEN_IDENTIFIER, %rbx
+    cmpq %rbx, %rax
+    jne parse_var_error
+
+    movq current_token_value, %rax
+    movq %rax, -8(%rbp)
+    call advance_token
+
     # Create variable node
     movq NODE_VARIABLE, %rdi
-    movq current_token_value, %rsi
+    movq -8(%rbp), %rsi
     call create_node
-    
+    movq %rax, -16(%rbp)
+
     # Expect semicolon
-    movq TOKEN_DELIMITER, %rdi
-    call expect_token
-    
+    movq current_token_type, %rbx
+    movq TOKEN_DELIMITER, %rcx
+    cmpq %rcx, %rbx
+    jne parse_var_error
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $';', %al
+    jne parse_var_error
+    call advance_token
+
+    movq -16(%rbp), %rax
     jmp parse_var_exit
-    
+
 parse_var_error:
     movq $0, %rax
-    
+
 parse_var_exit:
+    movq %rbp, %rsp
     popq %rbp
     ret
 
@@ -396,9 +533,321 @@ parse_var_exit:
 parse_expression:
     pushq %rbp
     movq %rsp, %rbp
-    
+
+    call parse_assignment
+
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+
+# Parse assignment expressions (right associative)
+parse_assignment:
+    pushq %rbp
+    movq %rsp, %rbp
+
+    call parse_relational
+    movq %rax, %rbx               # Left expression
+    cmpq $0, %rax
+    je parse_assignment_exit
+
+    movq current_token_type, %rcx
+    movq TOKEN_OPERATOR, %rdx
+    cmpq %rdx, %rcx
+    jne parse_assignment_noop
+
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $'=', %al
+    jne parse_assignment_noop
+
+    call advance_token
+
+    pushq %rbx
+    call parse_assignment
+    cmpq $0, %rax
+    je parse_assignment_error
+    movq %rax, %rcx               # Right expression
+    popq %rbx
+
+    movq NODE_ASSIGNMENT, %rdi
+    movq $assign_operator, %rsi
+    call create_node
+    movq %rbx, 16(%rax)
+    movq %rcx, 24(%rax)
+    jmp parse_assignment_exit
+
+parse_assignment_noop:
+    movq %rbx, %rax
+    jmp parse_assignment_exit
+
+parse_assignment_error:
+    popq %rbx
+    movq $0, %rax
+
+parse_assignment_exit:
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+
+# Parse relational expressions
+parse_relational:
+    pushq %rbp
+    movq %rsp, %rbp
+
+    call parse_additive
+    movq %rax, %rbx
+    cmpq $0, %rax
+    je parse_relational_exit
+
+parse_relational_loop:
+    movq current_token_type, %rcx
+    movq TOKEN_OPERATOR, %rdx
+    cmpq %rdx, %rcx
+    jne parse_relational_done
+
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $'>', %al
+    je parse_relational_gt
+    cmpb $'<', %al
+    je parse_relational_lt
+    jmp parse_relational_done
+
+parse_relational_gt:
+    call advance_token
+    pushq %rbx
+    call parse_additive
+    cmpq $0, %rax
+    je parse_relational_error_pop
+    movq %rax, %rcx
+    popq %rbx
+    movq NODE_BINARY_OP, %rdi
+    movq $gt_operator, %rsi
+    call create_node
+    movq %rbx, 16(%rax)
+    movq %rcx, 24(%rax)
+    movq %rax, %rbx
+    jmp parse_relational_loop
+
+parse_relational_lt:
+    call advance_token
+    pushq %rbx
+    call parse_additive
+    cmpq $0, %rax
+    je parse_relational_error_pop
+    movq %rax, %rcx
+    popq %rbx
+    movq NODE_BINARY_OP, %rdi
+    movq $lt_operator, %rsi
+    call create_node
+    movq %rbx, 16(%rax)
+    movq %rcx, 24(%rax)
+    movq %rax, %rbx
+    jmp parse_relational_loop
+
+parse_relational_error_pop:
+    popq %rbx
+
+parse_relational_error:
+    movq $0, %rax
+    jmp parse_relational_exit
+
+parse_relational_done:
+    movq %rbx, %rax
+
+parse_relational_exit:
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+
+# Parse additive expressions
+parse_additive:
+    pushq %rbp
+    movq %rsp, %rbp
+
+    call parse_term
+    movq %rax, %rbx
+    cmpq $0, %rax
+    je parse_additive_exit
+
+parse_additive_loop:
+    movq current_token_type, %rcx
+    movq TOKEN_OPERATOR, %rdx
+    cmpq %rdx, %rcx
+    jne parse_additive_done
+
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $'+', %al
+    je parse_additive_plus
+    cmpb $'-', %al
+    je parse_additive_minus
+    jmp parse_additive_done
+
+parse_additive_plus:
+    call advance_token
+    pushq %rbx
+    call parse_term
+    cmpq $0, %rax
+    je parse_additive_error_pop
+    movq %rax, %rcx
+    popq %rbx
+    movq NODE_BINARY_OP, %rdi
+    movq $plus_operator, %rsi
+    call create_node
+    movq %rbx, 16(%rax)
+    movq %rcx, 24(%rax)
+    movq %rax, %rbx
+    jmp parse_additive_loop
+
+parse_additive_minus:
+    call advance_token
+    pushq %rbx
+    call parse_term
+    cmpq $0, %rax
+    je parse_additive_error_pop
+    movq %rax, %rcx
+    popq %rbx
+    movq NODE_BINARY_OP, %rdi
+    movq $minus_operator, %rsi
+    call create_node
+    movq %rbx, 16(%rax)
+    movq %rcx, 24(%rax)
+    movq %rax, %rbx
+    jmp parse_additive_loop
+
+parse_additive_error_pop:
+    popq %rbx
+
+parse_additive_error:
+    movq $0, %rax
+    jmp parse_additive_exit
+
+parse_additive_done:
+    movq %rbx, %rax
+
+parse_additive_exit:
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+
+# Parse term expressions (multiplication/division)
+parse_term:
+    pushq %rbp
+    movq %rsp, %rbp
+
+    call parse_factor
+    movq %rax, %rbx
+    cmpq $0, %rax
+    je parse_term_exit
+
+parse_term_loop:
+    movq current_token_type, %rcx
+    movq TOKEN_OPERATOR, %rdx
+    cmpq %rdx, %rcx
+    jne parse_term_done
+
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $'*', %al
+    je parse_term_mul
+    cmpb $'/', %al
+    je parse_term_div
+    jmp parse_term_done
+
+parse_term_mul:
+    call advance_token
+    pushq %rbx
+    call parse_factor
+    cmpq $0, %rax
+    je parse_term_error_pop
+    movq %rax, %rcx
+    popq %rbx
+    movq NODE_BINARY_OP, %rdi
+    movq $mul_operator, %rsi
+    call create_node
+    movq %rbx, 16(%rax)
+    movq %rcx, 24(%rax)
+    movq %rax, %rbx
+    jmp parse_term_loop
+
+parse_term_div:
+    call advance_token
+    pushq %rbx
+    call parse_factor
+    cmpq $0, %rax
+    je parse_term_error_pop
+    movq %rax, %rcx
+    popq %rbx
+    movq NODE_BINARY_OP, %rdi
+    movq $div_operator, %rsi
+    call create_node
+    movq %rbx, 16(%rax)
+    movq %rcx, 24(%rax)
+    movq %rax, %rbx
+    jmp parse_term_loop
+
+parse_term_error_pop:
+    popq %rbx
+
+parse_term_error:
+    movq $0, %rax
+    jmp parse_term_exit
+
+parse_term_done:
+    movq %rbx, %rax
+
+parse_term_exit:
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+
+# Parse factor (primary expressions with parentheses)
+parse_factor:
+    pushq %rbp
+    movq %rsp, %rbp
+
+    movq current_token_type, %rax
+    movq TOKEN_DELIMITER, %rbx
+    cmpq %rbx, %rax
+    jne parse_factor_primary
+
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $'(', %al
+    jne parse_factor_primary
+
+    call advance_token
+    call parse_expression
+    cmpq $0, %rax
+    je parse_factor_error
+    pushq %rax
+
+    movq current_token_type, %rbx
+    movq TOKEN_DELIMITER, %rcx
+    cmpq %rcx, %rbx
+    jne parse_factor_error_restore
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $')', %al
+    jne parse_factor_error_restore
+    call advance_token
+
+    popq %rax
+    jmp parse_factor_exit
+
+parse_factor_error_restore:
+    popq %rax
+
+parse_factor_error:
+    movq $0, %rax
+    jmp parse_factor_exit
+
+parse_factor_primary:
     call parse_primary
-    
+
+parse_factor_exit:
+    movq %rbp, %rsp
     popq %rbp
     ret
 
@@ -407,42 +856,132 @@ parse_expression:
 parse_primary:
     pushq %rbp
     movq %rsp, %rbp
-    
+
     movq current_token_type, %rax
-    
+
     # Check for number
     movq TOKEN_NUMBER, %rbx
     cmpq %rbx, %rax
     jne check_identifier_expr
-    
-    # Create number node
+
     movq NODE_NUMBER, %rdi
     movq current_token_value, %rsi
     call create_node
-    
     call advance_token
     jmp parse_primary_exit
-    
+
 check_identifier_expr:
-    # Check for identifier
     movq TOKEN_IDENTIFIER, %rbx
     cmpq %rbx, %rax
     jne parse_primary_error
-    
-    # Create variable reference node
+
     movq NODE_VARIABLE, %rdi
     movq current_token_value, %rsi
     call create_node
-    
     call advance_token
     jmp parse_primary_exit
-    
+
 parse_primary_error:
     movq $0, %rax
-    
+
 parse_primary_exit:
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+
+# Parse if statement
+parse_if:
+    pushq %rbp
+    movq %rsp, %rbp
+    subq $32, %rsp
+
+    # Consume 'if'
+    call advance_token
+
+    movq $0, -24(%rbp)
+
+    # Expect '('
+    movq current_token_type, %rax
+    movq TOKEN_DELIMITER, %rbx
+    cmpq %rbx, %rax
+    jne parse_if_error
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $'(', %al
+    jne parse_if_error
+    call advance_token
+
+    # Parse condition
+    call parse_expression
+    cmpq $0, %rax
+    je parse_if_error
+    movq %rax, -8(%rbp)
+
+    # Expect ')'
+    movq current_token_type, %rax
+    movq TOKEN_DELIMITER, %rbx
+    cmpq %rbx, %rax
+    jne parse_if_error
+    movq current_token_value, %rdi
+    movb (%rdi), %al
+    cmpb $')', %al
+    jne parse_if_error
+    call advance_token
+
+    # Parse then branch
+    call parse_statement
+    cmpq $0, %rax
+    je parse_if_error
+    movq %rax, -16(%rbp)
+
+    # Check for optional else
+    movq current_token_type, %rax
+    movq TOKEN_KEYWORD, %rbx
+    cmpq %rbx, %rax
+    jne parse_if_create
+
+    movq current_token_value, %rdi
+    movq $else_keyword, %rsi
+    call strcmp_simple
+    cmpq $1, %rax
+    jne parse_if_create
+
+    call advance_token
+    call parse_statement
+    cmpq $0, %rax
+    je parse_if_error
+    movq %rax, -24(%rbp)
+
+parse_if_create:
+    movq NODE_IF, %rdi
+    movq $0, %rsi
+    call create_node
+    movq -8(%rbp), %rbx
+    movq %rbx, 16(%rax)
+    movq -16(%rbp), %rbx
+    movq %rbx, 24(%rax)
+    movq -24(%rbp), %rbx
+    movq %rbx, 8(%rax)          # Else branch stored in value field
+    jmp parse_if_exit
+
+parse_if_error:
+    movq $0, %rax
+
+parse_if_exit:
+    movq %rbp, %rsp
     popq %rbp
     ret
 
 .section .data
     return_keyword: .string "return"
+    int_keyword:    .string "int"
+    if_keyword:     .string "if"
+    else_keyword:   .string "else"
+
+    assign_operator: .string "="
+    plus_operator:   .string "+"
+    minus_operator:  .string "-"
+    mul_operator:    .string "*"
+    div_operator:    .string "/"
+    gt_operator:     .string ">"
+    lt_operator:     .string "<"

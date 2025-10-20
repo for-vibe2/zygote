@@ -121,39 +121,49 @@ skip_whitespace_after_return:
     je skip_ws_char
     cmpb $'\r', %al
     je skip_ws_char
-    jmp extract_number
+    jmp check_number_start
     
 skip_ws_char:
     incq %rsi
     jmp skip_whitespace_after_return
-    
+
+check_number_start:
+    movb (%rsi), %al
+    cmpb $'0', %al
+    jl continue_search_after_return
+    cmpb $'9', %al
+    jg continue_search_after_return
+
 extract_number:
     # Extract digits into local buffer
     leaq -32(%rbp), %rdi     # Local buffer
     movq $0, %rcx
-    
+
 extract_digit:
     movb (%rsi), %al
     cmpb $'0', %al
     jl done_extracting
     cmpb $'9', %al
     jg done_extracting
-    
+
     movb %al, (%rdi, %rcx)
     incq %rcx
     incq %rsi
     jmp extract_digit
-    
+
 done_extracting:
     movb $0, (%rdi, %rcx)    # Null terminate
-    
+
     # Copy to static buffer
     leaq -32(%rbp), %rsi
     movq $number_result, %rdi
     call strcpy_simple
-    
+
     movq $number_result, %rax
     jmp find_return_exit
+
+continue_search_after_return:
+    jmp search_return
     
 return_default:
     movq $default_ret, %rax

@@ -19,7 +19,6 @@
     success_msg:      .string "Compilation successful\n"
     error_msg:        .string "Compilation failed\n"
     usage_msg:        .string "Usage: %s <input.c> [-o output]\n"
-    
     # File buffers
     .global input_buffer
     input_buffer:     .space 4096
@@ -143,44 +142,44 @@ main_exit:
 compile_file:
     pushq %rbp
     movq %rsp, %rbp
-    
+
     # Read input file
     call read_input_file
     cmpq $0, %rax
     jne compile_error
-    
+
     # Initialize lexer with input
     movq $input_buffer, %rdi
     call lexer_init
-    
+
     # Initialize parser
     call parser_init
-    
+
     # Parse the program
     call parse_program
     cmpq $0, %rax
     je compile_error
-    
+
     pushq %rax               # Save AST root
-    
+
     # Initialize code generator
     call codegen_init
-    
+
     # Generate code from AST
     popq %rdi               # Restore AST root
     call generate_code
-    
+
     # Write output file
     call write_output_file
     cmpq $0, %rax
     jne compile_error
-    
+
     movq $0, %rax           # Success
     jmp compile_exit
-    
+
 compile_error:
     movq $1, %rax           # Error
-    
+
 compile_exit:
     popq %rbp
     ret
